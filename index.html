@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Costco Guessing Game</title>
+<script src="data.js"></script>
+<style>
+  /* Costco colors */
+  :root { --blue: #005daa; --red: #e31837; --green: #2e8b3a; --light: #f2f5f9; }
+  body { margin: 0; font-family: Arial, sans-serif; background: var(--light); color: #222; text-align: center; }
+  header { background: var(--blue); color: white; padding: 16px; border-bottom: 6px solid var(--red); }
+  header h1 { margin: 0; font-size: 28px; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  select { font-size: 16px; padding: 6px 12px; }
+  .btn { display: inline-block; margin-top: 10px; background: var(--red); color: white; text-decoration: none; padding: 6px 12px; border-radius: 4px; font-size: 14px; }
+  .btn:hover { background: #b8122b; }
+  #hint { color: #666; }
+  #question { color: var(--blue); font-size: 22px; margin: 16px 0 8px; }
+  #stats b { color: var(--blue); }
+  #time.low { color: var(--red); }
+  #cards { display: flex; justify-content: center; align-items: stretch; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+  .card { flex: 1 1 300px; max-width: 420px; background: white; border: 3px solid #ccd; border-radius: 8px; padding: 12px; cursor: pointer; }
+  .card:hover { border-color: var(--blue); }
+  .card img { width: 100%; max-width: 400px; aspect-ratio: 1; object-fit: contain; }
+  .card.win { background: #e3f4e5; border-color: var(--green); }
+  .card.lose { background: #fbe3e6; border-color: var(--red); }
+  .card.done { cursor: default; }
+  .or { align-self: center; font-weight: bold; color: var(--red); font-size: 20px; }
+  @media (max-width: 700px) { .or { flex-basis: 100%; } }
+  #msg { font-size: 24px; font-weight: bold; min-height: 30px; }
+  #msg.win { color: var(--green); }
+  #msg.lose { color: var(--red); }
+  /* membership badges */
+  #badges { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .badge { border: 2px solid #ccd; border-radius: 6px; padding: 6px 10px; font-size: 13px; background: white; color: #aaa; }
+  .badge small { display: block; font-size: 11px; }
+  .badge.earned { color: white; border-color: transparent; font-weight: bold; }
+  .badge.best:not(.earned) { color: #555; border-style: dashed; }
+  #newBadge { color: var(--blue); font-weight: bold; font-size: 20px; min-height: 26px; }
+</style>
+</head>
+<body>
+<header><h1>Costco Guessing Game</h1></header>
+<main>
+  <p>
+    Game mode:
+    <select id="mode">
+      <option value="price">Which costs more?</option>
+      <option value="gram">Which costs more per gram?</option>
+      <option value="more">Which has MORE calories per dollar?</option>
+      <option value="less">Which has LESS calories per dollar?</option>
+    </select>
+  </p>
+  <div id="question"></div>
+  <p id="stats">Score: <b id="score">0</b> | Round: <b id="round">1</b> | Best: <b id="best">0</b> | Time left: <b id="time">30</b></p>
+  <div id="badges"></div>
+
+  <div id="cards">
+    <div class="card" id="c0" onclick="guess(0)"></div>
+    <div class="or">or</div>
+    <div class="card" id="c1" onclick="guess(1)"></div>
+  </div>
+  <p id="msg"></p>
+  <p id="newBadge"></p>
+  <p id="hint" style="display:none">Click anywhere to continue</p>
+</main>
+
+<script>
+const ROUND_SECONDS = 30;
+const MODES = {
+  price: { question: "Which item costs more?",                   value: i => i.price, higherWins: true, showSize: true },
+  gram:  { question: "Which item costs more per gram?",          value: i => i.ppg,   higherWins: true },
+  more:  { question: "Which item has MORE calories per dollar?", value: i => i.cpd,   higherWins: true },
+  less:  { question: "Which item has LESS calories per dollar?", value: i => i.cpd,   higherWins: false },
+};
+// a new membership badge every 5 correct answers in a row
+const BADGES = [
+  { at: 5,  name: "Gold Star Member",       color: "#c9a000" },
+  { at: 10, name: "Business Member",        color: "#005daa" },
+  { at: 15, name: "Executive Member",       color: "#e31837" },
+];
+const $ = id => document.getElementById(id);
+let mode, pool, score, round, best, pair, locked, timer, left, used;
+// best scores per mode are kept in this browser
+const bests = JSON.parse(localStorage.costcoBest || "{}");
+
+function start() {
+  mode = MODES[$("mode").value];
+  // only use items that have a value for this mode (e.g. calorie modes need calorie data)
+  pool = ITEMS.filter(i => mode.value(i) !== null);
+  score = 0; round = 1; used = new Set(); pair = null;
+  best = bests[$("mode").value] || 0;
+  $("question").textContent = mode.question + " (30 seconds)";
+  $("score").textContent = score;
+  $("best").textContent = best;
+  showBadges();
+  show();
+}
+
+// earned in this run = filled in; best-ever but not this run = dashed outline
+function showBadges() {
+  $("badges").innerHTML = BADGES.map(b => {
+    const earned = score >= b.at, everEarned = best >= b.at;
+    return '<div class="badge' + (earned ? " earned" : "") + (everEarned ? " best" : "") + '"' +
+      (earned ? ' style="background:' + b.color + '"' : "") + '>' +
+      b.name + '<small>' + b.at + ' in a row</small></div>';
+  }).join("");
+}
+
+function pick() {
+  // difficulty: the allowed gap between the two values shrinks each round
+  const target = Math.max(1.05, 6 * Math.pow(0.8, round - 1));
+  let bestPair = null, bestScore = Infinity;
+  for (let i = 0; i < pool.length; i++) {
+    for (let j = i + 1; j < pool.length; j++) {
+      const a = mode.value(pool[i]), b = mode.value(pool[j]);
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      if (lo <= 0 || hi / lo < 1.02 || pool[i].short === pool[j].short) continue;
+      // prefer pairs whose ratio is close to the target, skip ones already shown
+      // and items from the previous round
+      const repeat = pair && (pair.includes(pool[i]) || pair.includes(pool[j]));
+      const s = Math.abs(Math.log(hi / lo) - Math.log(target)) + (used.has(i + "," + j) ? 100 : 0) + (repeat ? 10 : 0) + Math.random() * 0.3;
+      if (s < bestScore) { bestScore = s; bestPair = [i, j]; }
+    }
+  }
+  used.add(bestPair.join(","));
+  return Math.random() < 0.5 ? [pool[bestPair[0]], pool[bestPair[1]]] : [pool[bestPair[1]], pool[bestPair[0]]];
+}
+
+function card(item, reveal) {
+  let html = '<img src="' + item.img + '" alt=""><br>' +
+    '<b>' + (reveal || mode.showSize ? item.name : item.short) + '</b><br>';
+  if (reveal) {
+    html += 'Price: $' + item.price.toFixed(2) + '<br>';
+    if (item.amount) html += 'Amount: ' + item.amount + '<br>';
+    if (item.ppg !== null) html += '$' + (item.ppg * 100).toFixed(2) + ' per 100 g<br>';
+    if (item.cpd !== null) {
+      html += 'Total calories: ' + item.calories.toLocaleString() + '<br>' +
+        Math.round(item.cpd).toLocaleString() + ' cal per $<br>';
+    }
+    html += '<a class="btn" href="' + item.url + '" target="_blank" rel="noopener">View on Costco.ca</a>';
+  }
+  return html;
+}
+
+function show() {
+  pair = pick();
+  locked = false;
+  for (const k of [0, 1]) {
+    $("c" + k).className = "card";
+    $("c" + k).innerHTML = card(pair[k], false);
+  }
+  $("msg").textContent = "";
+  $("msg").className = "";
+  $("newBadge").textContent = "";
+  $("hint").style.display = "none";
+  $("round").textContent = round;
+  left = ROUND_SECONDS;
+  $("time").textContent = left;
+  $("time").className = "";
+  clearInterval(timer);
+  timer = setInterval(() => {
+    left--;
+    $("time").textContent = left;
+    if (left <= 10) $("time").className = "low";
+    if (left <= 0) guess(-1);
+  }, 1000);
+}
+
+function guess(n) {
+  if (locked) return;
+  locked = true;
+  clearInterval(timer);
+  const a = mode.value(pair[0]), b = mode.value(pair[1]);
+  const winner = (mode.higherWins ? a > b : a < b) ? 0 : 1;
+  const right = n === winner;
+  for (const k of [0, 1]) {
+    $("c" + k).innerHTML = card(pair[k], true);
+    // correct answer turns green; a wrong pick turns red
+    $("c" + k).className = "card done" + (k === winner ? " win" : k === n ? " lose" : "");
+  }
+  if (right) {
+    score++; round++;
+    $("msg").textContent = "Correct!";
+    $("msg").className = "win";
+    $("hint").textContent = "Click anywhere for the next round";
+    const badge = BADGES.find(x => x.at === score);
+    if (badge) $("newBadge").textContent = "You earned a badge: " + badge.name + "!";
+  } else {
+    $("msg").textContent = (n < 0 ? "Time's up! " : "Wrong! ") + "Final score: " + score;
+    $("msg").className = "lose";
+    score = 0; round = 1; used = new Set();
+    $("hint").textContent = "Click anywhere to play again";
+  }
+  if (score > best) {
+    best = score;
+    bests[$("mode").value] = best;
+    localStorage.costcoBest = JSON.stringify(bests);
+  }
+  $("score").textContent = score;
+  $("best").textContent = best;
+  if (right) showBadges(); // after a loss, keep this run's badges visible until the next game
+  $("hint").style.display = "";
+}
+
+// after an answer is revealed, a click anywhere starts the next round.
+// Capture phase so this click doesn't also count as a guess on the new cards.
+document.addEventListener("click", e => {
+  if (!locked || e.target.closest("a, select")) return;
+  e.stopPropagation();
+  if (score === 0) showBadges(); // new game: clear this run's badges
+  show();
+}, true);
+$("mode").onchange = start;
+start();
+</script>
+</body>
+</html>
